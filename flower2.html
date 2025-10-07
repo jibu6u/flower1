@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Flower of Life - 원추 무한 반복 애니메이션</title>
+<!-- WebXR polyfill for better browser compatibility -->
+<script src="https://cdn.jsdelivr.net/npm/webxr-polyfill@latest/build/webxr-polyfill.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    font-family: Arial, sans-serif;
+  }
+  
+  #ui {
+    position: fixed;
+    left: 10px;
+    top: 10px;
+    z-index: 10;
+    background: rgba(0, 0, 0, 0.8);
+    color: #fff;
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid #333;
+  }
+  
+  #ui button {
+    background: #4a90e2;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    margin: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  
+  #ui button:hover {
+    background: #357abd;
+  }
+  
+  #ui button:disabled {
+    background: #666;
+    cursor: not-allowed;
+  }
+  
+  #status {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #ccc;
+  }
+  
+  .control-group {
+    margin: 8px 0;
+  }
+  
+  .control-group label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 12px;
+    color: #ccc;
+  }
+  
+  .control-group input[type="range"] {
+    width: 100%;
+    margin: 4px 0;
+  }
+  
+  #pointsCanvas {
+    position: fixed;
+    right: 10px;
+    top: 10px;
+    width: 300px;
+    height: 300px;
+    background: #111;
+    border: 1px solid #333;
+    cursor: crosshair;
+  }
+</style>
+</head>
+<body>
+<div id="ui">
+  <button id="startBtn">애니메이션 시작</button>
+  <button id="stopBtn" disabled>애니메이션 중지</button>
+  <button id="enterVR">VR 시작</button>
+  
+  <div class="control-group">
+    <label>아펙스 거리(1~2m)</label>
+    <input id="apexDist" type="range" min="1" max="2" step="0.01" value="1.6">
+  </div>
+  
+  <div class="control-group">
+    <label>배경 회색(0~1)</label>
+    <input id="bgGray" type="range" min="0" max="1" step="0.01" value="0">
+  </div>
+  
+  <div class="control-group">
+    <label>그라데이션 세기</label>
+    <input id="bgGrad" type="range" min="0" max="3" step="0.01" value="1.0">
+  </div>
+  
+  <div class="control-group">
+    <label>애니메이션 속도 (0.1x - 3x)</label>
+    <input id="speedSlider" type="range" min="0.1" max="3" step="0.1" value="1.0">
+  </div>
+  
+  <div id="status">상태: 점 0/7</div>
+</div>
+
+<canvas id="pointsCanvas"></canvas>
+
+<script type="module">
+import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+import { VRButton } from "https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js";
+
+// ===== 점 입력 (7개) =====
+const pCanvas = document.getElementById('pointsCanvas');
+const pCtx = pCanvas.getContext('2d');
+let points = [];
+pCanvas.width = 300; 
+pCanvas.height = 300;
+
+function drawPoints() {
+  pCtx.fillStyle = '#111';
+  pCtx.fillRect(0, 0, 300, 300);
+  points.forEach((p) => {
+    pCtx.fillStyle = '#ff0';
+    pCtx.beginPath();
+    pCtx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+    pCtx.fill();
+  });
+  if (points.length === 7) {
+    pCtx.strokeStyle = '#ff0';
+    pCtx.lineWidth = 2;
+    pCtx.beginPath();
+    pCtx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < 7; i++) pCtx.lineTo(points[i].x, points[i].y);
+    pCtx.closePath();
+    pCtx.stroke();
+  }
+}
+
+function addPoint(x, y) {
+  if (points.length < 7) {
+    points.push({ x, y });
+    drawPoints();
+    document.getElementById('status').textContent = `상태: 점 ${points.length}/7`;
+  }
+}
+
+pCanvas.addEventListener('click', e => {
+  const r = pCanvas.getBoundingClientRect();
+  addPoint(e.clientX - r.left, e.clientY - r.top);
+});
+
+function computeSeed() {
+  let s = 0;
+  points.forEach((p, i) => {
+    s ^= ((p.x + p.y) | 0) << (i % 31);
+  });
+  return (s >>> 0) || 0x9e3779b9;
+}
+
+function mulberry32(a) {
+  return function() {
+    let t = a += 0x6D2B79F5;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+}
+
+let rng = mulberry32(0x1234abcd);
+
+// ===== Three.js 기본 =====
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0, 1.6, 3);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const light = new THREE.AmbientLight(0xffffff, 0.8);
+scene.add(light);
+
+// 정면 배치를 위한 루트 그룹
+const conesRoot = new THREE.Group();
+scene.add(conesRoot);
+
+// ===== Flower of Life 원추 애니메이션 =====
+let helices = [];
+let radiants = [];
+let running = false;
+let animationPhase = 0; // 0: 생성, 1: 유지, 2: 소멸
+let animationProgress = 0;
+let animationSpeed = 1.0;
+
+const palette = [0x32cd32, 0x00ff7f, 0x9acd32, 0xffff00, 0xffd700, 0xf0e68c, 0x9370db, 0x8a2be2, 0xba55d3, 0x1e90ff, 0x87cefa, 0xff6347, 0xff4500].map(v => new THREE.Color(v));
+
+// Flower of Life 위치 계산
+function calculateFlowerPositions() {
+  const positions = [];
+  const radius = 1.0;
+  
+  // 중심 위치
+  positions.push({ x: 0, y: 0, z: 0, order: 0 });
+  
+  // 첫 번째 고리 (6개)
+  for (let i = 0; i < 6; i++) {
+    const angle = (i * Math.PI * 2) / 6;
+    const x = Math.cos(angle) * radius;
+    const z = Math.sin(angle) * radius;
+    positions.push({ x, y: 0, z, order: 1 });
+  }
+  
+  // 두 번째 고리 (12개)
+  for (let i = 0; i < 12; i++) {
+    const angle = (i * Math.PI * 2) / 12;
+    const x = Math.cos(angle) * (radius * 2);
+    const z = Math.sin(angle) * (radius * 2);
+    positions.push({ x, y: 0, z, order: 2 });
+  }
+  
+  // 세 번째 고리 (18개)
+  for (let i = 0; i < 18; i++) {
+    const angle = (i * Math.PI * 2) / 18;
+    const x = Math.cos(angle) * (radius * 3);
+    const z = Math.sin(angle) * (radius * 3);
+    positions.push({ x, y: 0, z, order: 3 });
+  }
+  
+  return positions;
+}
+
+const flowerPositions = calculateFlowerPositions();
+
+function createHelices(seed) {
+  helices = [];
+  rng = mulberry32(seed);
+  const seg = 220;
+  const geomT = new THREE.BufferGeometry();
+  geomT.setAttribute('position', new THREE.BufferAttribute(new Float32Array(seg * 3), 3));
+  
+  // Flower of Life 위치에 원추 생성
+  for (let i = 0; i < flowerPositions.length; i++) {
+    const pos = flowerPositions[i];
+    const mat = new THREE.LineBasicMaterial({ 
+      color: palette[Math.floor(rng() * palette.length)],
+      transparent: true,
+      opacity: 0
+    });
+    const line = new THREE.Line(geomT.clone(), mat);
+    line.userData = { 
+      phase: rng() * Math.PI * 2, 
+      side: (i % 2 === 0 ? 1 : -1),
+      position: pos,
+      order: pos.order,
+      visible: false
+    };
+    line.position.set(pos.x, pos.y, pos.z);
+    conesRoot.add(line);
+    helices.push(line);
+  }
+
+  // 중심에서 방사되는 원추 라인 추가
+  radiants = [];
+  const rays = Math.max(60, Math.floor(flowerPositions.length * 0.5));
+  for (let i = 0; i < rays; i++) {
+    const g = geomT.clone();
+    const m = new THREE.LineBasicMaterial({ 
+      color: palette[Math.floor(rng() * palette.length)],
+      transparent: true,
+      opacity: 0
+    });
+    const l = new THREE.Line(g, m);
+    l.userData = { 
+      theta: (i / rays) * Math.PI * 2,
+      visible: false
+    };
+    conesRoot.add(l); 
+    radiants.push(l);
+  }
+}
+
+function updateHelices(time) {
+  const seg = 220;
+  const height = 4.0;
+  const stepY = height / seg;
+  const baseR = 0.8;
+  const twist = 2.5;
+  const tilt = 0.25;
+  
+  for (const line of helices) {
+    const pos = line.geometry.attributes.position.array;
+    let p = 0;
+    for (let s = 0; s < seg; s++) {
+      const y = s * stepY;
+      const hNorm = (y) / (height);
+      const radius = baseR * Math.pow(hNorm, 0.85);
+      const angle = twist * y * 2 + time * 2.0 + line.userData.phase;
+      const offset = (line.userData.side > 0 ? tilt : -tilt);
+      pos[p++] = Math.cos(angle) * radius + offset;
+      pos[p++] = y;
+      pos[p++] = Math.sin(angle) * radius;
+    }
+    line.geometry.attributes.position.needsUpdate = true;
+  }
+
+  // 방사 라인 업데이트
+  for (let i = 0; i < radiants.length; i++) {
+    const line = radiants[i];
+    const pos = line.geometry.attributes.position.array; 
+    let p = 0;
+    const theta = line.userData.theta + time * 0.3;
+    for (let s = 0; s < seg; s++) {
+      const yNorm = s / (seg - 1);
+      const y = (yNorm) * (height / 2);
+      const r = baseR * Math.pow(yNorm, 1.0);
+      pos[p++] = Math.cos(theta) * r;
+      pos[p++] = y;
+      pos[p++] = Math.sin(theta) * r;
+    }
+    line.geometry.attributes.position.needsUpdate = true;
+  }
+}
+
+function updateFlowerAnimation(deltaTime) {
+  if (!running) return;
+  
+  animationProgress += deltaTime * animationSpeed * 0.5;
+  
+  if (animationPhase === 0) {
+    // 생성 단계: 원추들이 하나씩 나타남
+    updateCreationPhase();
+  } else if (animationPhase === 1) {
+    // 유지 단계: 완성된 패턴 유지
+    updateMaintenancePhase();
+  } else if (animationPhase === 2) {
+    // 소멸 단계: 원추들이 하나씩 사라짐
+    updateDestructionPhase();
+  }
+}
+
+function updateCreationPhase() {
+  const totalCones = helices.length;
+  const creationTime = 4.0; // 4초 동안 생성
+  const conesToShow = Math.floor((animationProgress / creationTime) * totalCones);
+  
+  // 원추들이 하나씩 나타남
+  helices.forEach((cone, index) => {
+    if (index < conesToShow) {
+      const fadeInTime = 0.5;
+      const startTime = (index / totalCones) * creationTime;
+      const fadeProgress = Math.max(0, Math.min(1, (animationProgress - startTime) / fadeInTime));
+      cone.material.opacity = fadeProgress;
+      cone.userData.visible = true;
+    } else {
+      cone.material.opacity = 0;
+      cone.userData.visible = false;
+    }
+  });
+  
+  // 방사 라인들도 함께 나타남
+  radiants.forEach((ray, index) => {
+    if (index < Math.floor(conesToShow * 0.3)) {
+      const fadeInTime = 0.5;
+      const startTime = (index / radiants.length) * creationTime;
+      const fadeProgress = Math.max(0, Math.min(1, (animationProgress - startTime) / fadeInTime));
+      ray.material.opacity = fadeProgress * 0.6;
+      ray.userData.visible = true;
+    } else {
+      ray.material.opacity = 0;
+      ray.userData.visible = false;
+    }
+  });
+  
+  // 생성 완료 시 다음 단계로
+  if (animationProgress >= creationTime) {
+    animationPhase = 1;
+    animationProgress = 0;
+  }
+}
+
+function updateMaintenancePhase() {
+  const maintenanceTime = 3.0; // 3초 동안 유지
+  
+  // 모든 원추가 완전히 보이도록 설정
+  helices.forEach(cone => {
+    cone.material.opacity = 1.0;
+    cone.userData.visible = true;
+  });
+  
+  radiants.forEach(ray => {
+    ray.material.opacity = 0.6;
+    ray.userData.visible = true;
+  });
+  
+  // 유지 시간 완료 시 다음 단계로
+  if (animationProgress >= maintenanceTime) {
+    animationPhase = 2;
+    animationProgress = 0;
+  }
+}
+
+function updateDestructionPhase() {
+  const totalCones = helices.length;
+  const destructionTime = 4.0; // 4초 동안 소멸
+  
+  // 원추들이 하나씩 사라짐 (역순으로)
+  helices.forEach((cone, index) => {
+    const reverseIndex = totalCones - 1 - index;
+    const fadeOutTime = 0.5;
+    const startTime = (reverseIndex / totalCones) * destructionTime;
+    const fadeProgress = Math.max(0, Math.min(1, (animationProgress - startTime) / fadeOutTime));
+    cone.material.opacity = 1.0 - fadeProgress;
+    if (fadeProgress >= 1) {
+      cone.userData.visible = false;
+    }
+  });
+  
+  // 방사 라인들도 함께 사라짐
+  radiants.forEach((ray, index) => {
+    const reverseIndex = radiants.length - 1 - index;
+    const fadeOutTime = 0.5;
+    const startTime = (reverseIndex / radiants.length) * destructionTime;
+    const fadeProgress = Math.max(0, Math.min(1, (animationProgress - startTime) / fadeOutTime));
+    ray.material.opacity = (1.0 - fadeProgress) * 0.6;
+    if (fadeProgress >= 1) {
+      ray.userData.visible = false;
+    }
+  });
+  
+  // 소멸 완료 시 다시 생성 단계로
+  if (animationProgress >= destructionTime) {
+    animationPhase = 0;
+    animationProgress = 0;
+  }
+}
+
+const clock = new THREE.Clock();
+function animate() {
+  renderer.setAnimationLoop(() => {
+    if (running) {
+      updateHelices(clock.getElapsedTime());
+      updateFlowerAnimation(clock.getDelta());
+    }
+    syncRootToCamera();
+    renderer.render(scene, camera);
+  });
+}
+
+function syncRootToCamera() {
+  const camPos = new THREE.Vector3();
+  const forward = new THREE.Vector3();
+  camera.getWorldPosition(camPos);
+  camera.getWorldDirection(forward);
+  const apexSlider = document.getElementById('apexDist');
+  const dist = Math.max(1.0, Math.min(2.0, parseFloat(apexSlider?.value || '1.6')));
+  conesRoot.position.copy(camPos).add(forward.multiplyScalar(dist));
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), camera.getWorldDirection(new THREE.Vector3()).normalize());
+  conesRoot.quaternion.copy(q);
+}
+
+animate();
+
+// ===== UI 컨트롤 =====
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const enterVR = document.getElementById('enterVR');
+const speedSlider = document.getElementById('speedSlider');
+const apexDist = document.getElementById('apexDist');
+const bgGray = document.getElementById('bgGray');
+const bgGrad = document.getElementById('bgGrad');
+
+startBtn.onclick = () => {
+  if (points.length !== 7) {
+    alert('점 7개를 먼저 찍어주세요.');
+    return;
+  }
+  const seed = computeSeed();
+  createHelices(seed);
+  running = true;
+  animationPhase = 0;
+  animationProgress = 0;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  document.getElementById('status').textContent = `상태: 실행중 (seed=0x${seed.toString(16)})`;
+};
+
+stopBtn.onclick = () => {
+  running = false;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  document.getElementById('status').textContent = `상태: 점 ${points.length}/7`;
+};
+
+speedSlider.addEventListener('input', (e) => {
+  animationSpeed = parseFloat(e.target.value);
+});
+
+enterVR.onclick = () => { 
+  if (navigator.xr) {
+    navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
+      if (supported) {
+        const btn = VRButton.createButton(renderer);
+        document.body.appendChild(btn);
+      } else {
+        alert('이 브라우저는 WebXR을 지원하지 않습니다. Chrome, Edge, 또는 Firefox를 사용해주세요.');
+      }
+    });
+  } else {
+    alert('WebXR이 지원되지 않습니다. 최신 브라우저를 사용해주세요.');
+  }
+};
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// 배경 컨트롤
+function applyBackground() {
+  const g = parseFloat(bgGray.value || '0');
+  scene.background = new THREE.Color().setScalar(Math.max(0, Math.min(1, g)));
+  const grad = parseFloat(bgGrad.value || '1');
+  renderer.toneMappingExposure = THREE.MathUtils.clamp(1.0 / Math.max(0.2, grad), 0.2, 5.0);
+}
+
+bgGray.addEventListener('input', applyBackground);
+bgGrad.addEventListener('input', applyBackground);
+applyBackground();
+
+// 초기 점 그리기
+drawPoints();
+</script>
+</body>
+</html>
