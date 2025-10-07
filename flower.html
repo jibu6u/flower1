@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Flower of Life - 원추 무한 반복 애니메이션</title>
+<!-- WebXR polyfill for better browser compatibility -->
+<script src="https://cdn.jsdelivr.net/npm/webxr-polyfill@latest/build/webxr-polyfill.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    font-family: Arial, sans-serif;
+  }
+  
+  #ui {
+    position: fixed;
+    left: 10px;
+    top: 10px;
+    z-index: 10;
+    background: rgba(0, 0, 0, 0.8);
+    color: #fff;
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid #333;
+  }
+  
+  #ui button {
+    background: #4a90e2;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    margin: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  
+  #ui button:hover {
+    background: #357abd;
+  }
+  
+  #ui button:disabled {
+    background: #666;
+    cursor: not-allowed;
+  }
+  
+  #status {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #ccc;
+  }
+  
+  .control-group {
+    margin: 8px 0;
+  }
+  
+  .control-group label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 12px;
+    color: #ccc;
+  }
+  
+  .control-group input[type="range"] {
+    width: 100%;
+    margin: 4px 0;
+  }
+  
+  #pointsCanvas {
+    position: fixed;
+    right: 10px;
+    top: 10px;
+    width: 300px;
+    height: 300px;
+    background: #111;
+    border: 1px solid #333;
+    cursor: crosshair;
+  }
+</style>
+</head>
+<body>
+<div id="ui">
+  <button id="startBtn">애니메이션 시작</button>
+  <button id="stopBtn" disabled>애니메이션 중지</button>
+  <button id="enterVR">VR 시작</button>
+  
+  <div class="control-group">
+    <label>아펙스 거리(1~2m)</label>
+    <input id="apexDist" type="range" min="1" max="2" step="0.01" value="1.6">
+  </div>
+  
+  <div class="control-group">
+    <label>배경 회색(0~1)</label>
+    <input id="bgGray" type="range" min="0" max="1" step="0.01" value="0">
+  </div>
+  
+  <div class="control-group">
+    <label>그라데이션 세기</label>
+    <input id="bgGrad" type="range" min="0" max="3" step="0.01" value="1.0">
+  </div>
+  
+  <div class="control-group">
+    <label>애니메이션 속도 (0.1x - 3x)</label>
+    <input id="speedSlider" type="range" min="0.1" max="3" step="0.1" value="1.0">
+  </div>
+  
+  <div id="status">상태: 점 0/7</div>
+</div>
+
+<canvas id="pointsCanvas"></canvas>
+
+<script type="module">
+import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+import { VRButton } from "https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js";
+
+// ===== Three.js 기본 설정 =====
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0, 1.6, 3);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// 조명 설정
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambientLight);
+
+const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+directionalLight.position.set(5, 5, 5);
+scene.add(directionalLight);
+
+// Flower of Life 패턴을 위한 그룹
+const flowerGroup = new THREE.Group();
+scene.add(flowerGroup);
+
+// ===== Flower of Life 패턴 생성 =====
+class FlowerOfLife {
+  constructor() {
+    this.circles = [];
+    this.animationPhase = 0; // 0: 생성, 1: 유지, 2: 소멸
+    this.animationProgress = 0;
+    this.speed = 1.0;
+    this.size = 1.0;
+    this.colorIntensity = 1.0;
+    this.isRunning = false;
+    
+    // Flower of Life의 원 중심점들 (기하학적으로 계산)
+    this.circleCenters = this.calculateCircleCenters();
+    
+    // 색상 팔레트
+    this.colors = [
+      0x4a90e2, 0x7b68ee, 0x9370db, 0xba55d3,
+      0xff69b4, 0xff1493, 0x00ced1, 0x20b2aa,
+      0x32cd32, 0x9acd32, 0xffff00, 0xffd700,
+      0xff6347, 0xff4500, 0xdc143c, 0xb22222
+    ];
+  }
+  
+  calculateCircleCenters() {
+    const centers = [];
+    const radius = 1.0;
+    
+    // 중심 원
+    centers.push({ x: 0, y: 0, z: 0, radius: radius, order: 0 });
+    
+    // 첫 번째 고리 (6개 원)
+    for (let i = 0; i < 6; i++) {
+      const angle = (i * Math.PI * 2) / 6;
+      const x = Math.cos(angle) * radius;
+      const z = Math.sin(angle) * radius;
+      centers.push({ x, y: 0, z, radius: radius, order: 1 });
+    }
+    
+    // 두 번째 고리 (12개 원)
+    for (let i = 0; i < 12; i++) {
+      const angle = (i * Math.PI * 2) / 12;
+      const x = Math.cos(angle) * (radius * 2);
+      const z = Math.sin(angle) * (radius * 2);
+      centers.push({ x, y: 0, z, radius: radius, order: 2 });
+    }
+    
+    // 세 번째 고리 (18개 원)
+    for (let i = 0; i < 18; i++) {
+      const angle = (i * Math.PI * 2) / 18;
+      const x = Math.cos(angle) * (radius * 3);
+      const z = Math.sin(angle) * (radius * 3);
+      centers.push({ x, y: 0, z, radius: radius, order: 3 });
+    }
+    
+    return centers;
+  }
+  
+  createCircle(center, color, opacity = 1.0) {
+    const geometry = new THREE.RingGeometry(
+      center.radius * 0.95 * this.size,
+      center.radius * this.size,
+      64
+    );
+    
+    const material = new THREE.MeshBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: opacity,
+      side: THREE.DoubleSide
+    });
+    
+    const circle = new THREE.Mesh(geometry, material);
+    circle.position.set(center.x, center.y, center.z);
+    circle.userData = {
+      center: center,
+      originalColor: color,
+      order: center.order
+    };
+    
+    return circle;
+  }
+  
+  startAnimation() {
+    this.isRunning = true;
+    this.animationPhase = 0;
+    this.animationProgress = 0;
+    this.clearCircles();
+    document.getElementById('status').textContent = '상태: 애니메이션 실행중';
+  }
+  
+  stopAnimation() {
+    this.isRunning = false;
+    this.clearCircles();
+    document.getElementById('status').textContent = '상태: 대기중';
+  }
+  
+  clearCircles() {
+    this.circles.forEach(circle => {
+      flowerGroup.remove(circle);
+      circle.geometry.dispose();
+      circle.material.dispose();
+    });
+    this.circles = [];
+  }
+  
+  update(deltaTime) {
+    if (!this.isRunning) return;
+    
+    this.animationProgress += deltaTime * this.speed * 0.5;
+    
+    // 애니메이션 단계별 처리
+    if (this.animationPhase === 0) {
+      // 생성 단계: 원들이 하나씩 나타남
+      this.updateCreationPhase();
+    } else if (this.animationPhase === 1) {
+      // 유지 단계: 완성된 패턴 유지
+      this.updateMaintenancePhase();
+    } else if (this.animationPhase === 2) {
+      // 소멸 단계: 원들이 하나씩 사라짐
+      this.updateDestructionPhase();
+    }
+  }
+  
+  updateCreationPhase() {
+    const totalCircles = this.circleCenters.length;
+    const creationTime = 3.0; // 3초 동안 생성
+    const circlesToShow = Math.floor((this.animationProgress / creationTime) * totalCircles);
+    
+    // 새로운 원들 생성
+    while (this.circles.length < circlesToShow && this.circles.length < totalCircles) {
+      const center = this.circleCenters[this.circles.length];
+      const colorIndex = this.circles.length % this.colors.length;
+      const color = new THREE.Color(this.colors[colorIndex]);
+      color.multiplyScalar(this.colorIntensity);
+      
+      const circle = this.createCircle(center, color, 0);
+      flowerGroup.add(circle);
+      this.circles.push(circle);
+    }
+    
+    // 페이드 인 애니메이션
+    this.circles.forEach((circle, index) => {
+      const fadeInTime = 0.3;
+      const startTime = (index / totalCircles) * creationTime;
+      const fadeProgress = Math.max(0, Math.min(1, (this.animationProgress - startTime) / fadeInTime));
+      circle.material.opacity = fadeProgress;
+    });
+    
+    // 생성 완료 시 다음 단계로
+    if (this.animationProgress >= creationTime) {
+      this.animationPhase = 1;
+      this.animationProgress = 0;
+    }
+  }
+  
+  updateMaintenancePhase() {
+    const maintenanceTime = 2.0; // 2초 동안 유지
+    
+    // 모든 원이 완전히 보이도록 설정
+    this.circles.forEach(circle => {
+      circle.material.opacity = 1.0;
+    });
+    
+    // 약간의 회전 효과
+    flowerGroup.rotation.y += 0.005 * this.speed;
+    
+    // 유지 시간 완료 시 다음 단계로
+    if (this.animationProgress >= maintenanceTime) {
+      this.animationPhase = 2;
+      this.animationProgress = 0;
+    }
+  }
+  
+  updateDestructionPhase() {
+    const totalCircles = this.circles.length;
+    const destructionTime = 3.0; // 3초 동안 소멸
+    const circlesToHide = Math.floor((this.animationProgress / destructionTime) * totalCircles);
+    
+    // 원들이 하나씩 사라짐 (역순으로)
+    this.circles.forEach((circle, index) => {
+      const reverseIndex = totalCircles - 1 - index;
+      const fadeOutTime = 0.3;
+      const startTime = (reverseIndex / totalCircles) * destructionTime;
+      const fadeProgress = Math.max(0, Math.min(1, (this.animationProgress - startTime) / fadeOutTime));
+      circle.material.opacity = 1.0 - fadeProgress;
+    });
+    
+    // 소멸 완료 시 다시 생성 단계로
+    if (this.animationProgress >= destructionTime) {
+      this.animationPhase = 0;
+      this.animationProgress = 0;
+      this.clearCircles();
+    }
+  }
+  
+  setSpeed(speed) {
+    this.speed = speed;
+  }
+  
+  setSize(size) {
+    this.size = size;
+    // 기존 원들의 크기 업데이트
+    this.circles.forEach(circle => {
+      const center = circle.userData.center;
+      circle.geometry.dispose();
+      circle.geometry = new THREE.RingGeometry(
+        center.radius * 0.95 * this.size,
+        center.radius * this.size,
+        64
+      );
+    });
+  }
+  
+  setColorIntensity(intensity) {
+    this.colorIntensity = intensity;
+    // 기존 원들의 색상 업데이트
+    this.circles.forEach((circle, index) => {
+      const colorIndex = index % this.colors.length;
+      const color = new THREE.Color(this.colors[colorIndex]);
+      color.multiplyScalar(this.colorIntensity);
+      circle.material.color = color;
+    });
+  }
+}
+
+// Flower of Life 인스턴스 생성
+const flowerOfLife = new FlowerOfLife();
+
+// ===== 애니메이션 루프 =====
+const clock = new THREE.Clock();
+function animate() {
+  renderer.setAnimationLoop(() => {
+    const deltaTime = clock.getDelta();
+    flowerOfLife.update(deltaTime);
+    renderer.render(scene, camera);
+  });
+}
+
+// ===== UI 컨트롤 =====
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const enterVR = document.getElementById('enterVR');
+const speedSlider = document.getElementById('speedSlider');
+const sizeSlider = document.getElementById('sizeSlider');
+const colorSlider = document.getElementById('colorSlider');
+
+startBtn.onclick = () => {
+  flowerOfLife.startAnimation();
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+};
+
+stopBtn.onclick = () => {
+  flowerOfLife.stopAnimation();
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+};
+
+speedSlider.addEventListener('input', (e) => {
+  flowerOfLife.setSpeed(parseFloat(e.target.value));
+});
+
+sizeSlider.addEventListener('input', (e) => {
+  flowerOfLife.setSize(parseFloat(e.target.value));
+});
+
+colorSlider.addEventListener('input', (e) => {
+  flowerOfLife.setColorIntensity(parseFloat(e.target.value));
+});
+
+// VR 버튼 설정
+enterVR.onclick = () => {
+  if (navigator.xr) {
+    navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
+      if (supported) {
+        const btn = VRButton.createButton(renderer);
+        document.body.appendChild(btn);
+      } else {
+        alert('이 브라우저는 WebXR을 지원하지 않습니다. Chrome, Edge, 또는 Firefox를 사용해주세요.');
+      }
+    });
+  } else {
+    alert('WebXR이 지원되지 않습니다. 최신 브라우저를 사용해주세요.');
+  }
+};
+
+// 윈도우 리사이즈 처리
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// 애니메이션 시작
+animate();
+
+// 자동으로 애니메이션 시작
+setTimeout(() => {
+  flowerOfLife.startAnimation();
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+}, 1000);
+</script>
+</body>
+</html>
